@@ -553,31 +553,88 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 	if len(cached) > 0 {
 		for _, m := range cached {
 			supportsImage := modelSupportsImage(m.InputTypes)
-			models = append(models, buildModelInfo(m.ModelId, "anthropic", supportsImage))
+			owner := kiroModelOwner(m.ModelId)
+			models = append(models, buildModelInfo(m.ModelId, owner, supportsImage))
 			// 自动生成 thinking 变体
-			models = append(models, buildModelInfo(m.ModelId+thinkingSuffix, "anthropic", supportsImage))
+			models = append(models, buildModelInfo(m.ModelId+thinkingSuffix, owner, supportsImage))
 		}
 	}
 	return models
 }
 
-func fallbackAnthropicModels(thinkingSuffix string) []map[string]interface{} {
-	return []map[string]interface{}{
-		buildModelInfo("claude-sonnet-4.6", "anthropic", true),
-		buildModelInfo("claude-sonnet-4.6"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-opus-4.6", "anthropic", true),
-		buildModelInfo("claude-opus-4.6"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-opus-4.7", "anthropic", true),
-		buildModelInfo("claude-opus-4.7"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-sonnet-4.5", "anthropic", true),
-		buildModelInfo("claude-sonnet-4.5"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-sonnet-4", "anthropic", true),
-		buildModelInfo("claude-sonnet-4"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-haiku-4.5", "anthropic", true),
-		buildModelInfo("claude-haiku-4.5"+thinkingSuffix, "anthropic", true),
-		buildModelInfo("claude-opus-4.5", "anthropic", true),
-		buildModelInfo("claude-opus-4.5"+thinkingSuffix, "anthropic", true),
+// kiroModelEntry is one model in Kiro's upstream catalogue.
+//
+// FreeTier records whether the cheapest Kiro plan can call it. This matters
+// because Kiro rejects a model the account's plan does not include with
+// HTTP 400 INVALID_MODEL_ID ("Invalid model. Please select a different model"),
+// which reads like a typo in the id but is really an entitlement failure. Ids
+// that only paid plans can use must therefore never be handed to a client as a
+// guess.
+type kiroModelEntry struct {
+	ID            string
+	Owner         string
+	FreeTier      bool
+	SupportsImage bool
+}
+
+// kiroModelCatalog is the maintained list of models Kiro currently exposes.
+// Source: https://kiro.dev/docs/models/ (fetched 2026-10-05).
+//
+// Paid-only entries are kept here for reference and ownership lookup; only
+// FreeTier entries are ever advertised as a fallback (see fallbackAnthropicModels).
+var kiroModelCatalog = []kiroModelEntry{
+	// Free tier.
+	{ID: "claude-sonnet-4.5", Owner: "anthropic", FreeTier: true, SupportsImage: true},
+	{ID: "claude-sonnet-4", Owner: "anthropic", FreeTier: true, SupportsImage: true},
+	{ID: "deepseek-3.2", Owner: "deepseek", FreeTier: true, SupportsImage: false},
+	{ID: "minimax-m2.5", Owner: "minimax", FreeTier: true, SupportsImage: false},
+	{ID: "minimax-m2.1", Owner: "minimax", FreeTier: true, SupportsImage: false},
+	{ID: "glm-5", Owner: "zhipu", FreeTier: true, SupportsImage: false},
+	{ID: "qwen3-coder-next", Owner: "qwen", FreeTier: true, SupportsImage: false},
+	// Paid plans (Pro and above).
+	{ID: "claude-fable-5.1", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-opus-5.5", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-opus-5", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-opus-4.8", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-opus-4.7", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-opus-4.6", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-opus-4.5", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-sonnet-5.5", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-sonnet-5", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-sonnet-4.6", Owner: "anthropic", SupportsImage: true},
+	{ID: "claude-haiku-4.5", Owner: "anthropic", SupportsImage: true},
+	{ID: "gpt-5.6-sol", Owner: "openai", SupportsImage: true},
+	{ID: "gpt-5.6-terra", Owner: "openai", SupportsImage: true},
+	{ID: "gpt-5.6-luna", Owner: "openai", SupportsImage: true},
+}
+
+// kiroModelOwner reports the provider that owns a model id, falling back to
+// anthropic for ids the catalogue does not know.
+func kiroModelOwner(id string) string {
+	base := strings.TrimSuffix(id, "-thinking")
+	for _, m := range kiroModelCatalog {
+		if m.ID == base {
+			return m.Owner
+		}
 	}
+	return "anthropic"
+}
+
+// fallbackAnthropicModels is the model list served when the live per-account
+// catalogue is unavailable. It deliberately contains only free-tier ids: they
+// are the lowest common denominator every plan can call, so a client that picks
+// one cannot trip INVALID_MODEL_ID. Advertising paid-only ids here is what made
+// clients select models the account could not use.
+func fallbackAnthropicModels(thinkingSuffix string) []map[string]interface{} {
+	models := make([]map[string]interface{}, 0, len(kiroModelCatalog)*2)
+	for _, m := range kiroModelCatalog {
+		if !m.FreeTier {
+			continue
+		}
+		models = append(models, buildModelInfo(m.ID, m.Owner, m.SupportsImage))
+		models = append(models, buildModelInfo(m.ID+thinkingSuffix, m.Owner, m.SupportsImage))
+	}
+	return models
 }
 
 func modelSupportsImage(inputTypes []string) bool {
@@ -624,10 +681,10 @@ func buildModelInfo(id, ownedBy string, supportsImage bool) map[string]interface
 }
 
 // refreshModelsCache 从 Kiro API 拉取模型列表并缓存
-func (h *Handler) refreshModelsCache() {
+func (h *Handler) refreshModelsCache() (refreshed, failed int, firstErr error) {
 	accounts := config.GetEnabledAccounts()
 	if len(accounts) == 0 {
-		return
+		return 0, 0, nil
 	}
 
 	aggregated := make([]ModelInfo, 0)
@@ -644,6 +701,10 @@ func (h *Handler) refreshModelsCache() {
 		if err := h.ensureValidToken(account); err != nil {
 			logger.Warnf("[ModelsCache] Skip %s token refresh failed: %v", account.Email, err)
 			h.handleAccountFailure(account, err)
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 
@@ -651,6 +712,10 @@ func (h *Handler) refreshModelsCache() {
 		if err != nil {
 			logger.Warnf("[ModelsCache] Failed to refresh for %s: %v", account.Email, err)
 			h.handleAccountFailure(account, err)
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		// 缓存每账号可用模型，用于路由时过滤
@@ -669,6 +734,7 @@ func (h *Handler) refreshModelsCache() {
 		h.modelsCacheMu.Unlock()
 		logger.Infof("[ModelsCache] Cached %d models", len(aggregated))
 	}
+	return len(aggregated), failed, firstErr
 }
 
 // fetchAndCacheAccountModels 为单个账号拉取并写入模型缓存。
@@ -734,15 +800,24 @@ func (h *Handler) apiRefreshAccountModels(w http.ResponseWriter, r *http.Request
 // apiRefreshAllAccountsModels POST /admin/api/accounts/models/refresh
 // 直接复用 refreshModelsCache，为所有已启用账号刷新模型路由缓存。
 func (h *Handler) apiRefreshAllAccountsModels(w http.ResponseWriter, r *http.Request) {
-	h.refreshModelsCache()
+	_, failed, firstErr := h.refreshModelsCache()
+	// Report the aggregate cache size, not the per-account success count: the
+	// panel renders this as "N models". The failure count and the first upstream
+	// error are surfaced so a total refresh failure no longer looks like a
+	// successful refresh of zero models.
 	h.modelsCacheMu.RLock()
-	cachedLen := len(h.cachedModels)
+	refreshed := len(h.cachedModels)
 	h.modelsCacheMu.RUnlock()
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":   true,
-		"refreshed": cachedLen,
-		"failed":    0,
-	})
+
+	resp := map[string]interface{}{
+		"success":   failed == 0,
+		"refreshed": refreshed,
+		"failed":    failed,
+	}
+	if firstErr != nil {
+		resp["error"] = firstErr.Error()
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func mergeUniqueModels(existing []ModelInfo, incoming []ModelInfo) []ModelInfo {

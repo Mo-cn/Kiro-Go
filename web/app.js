@@ -1202,7 +1202,11 @@
       const res = await api('/accounts/models/refresh', { method: 'POST' });
       const d = await res.json();
       dismiss();
-      toast(t('models.refreshAllDone', d.refreshed || 0), 'success');
+      const failed = d.failed || 0;
+      const detail = failed
+        ? ' · ' + t('common.failed') + ' ' + failed + (d.error ? ': ' + d.error : '')
+        : '';
+      toast(t('models.refreshAllDone', d.refreshed || 0) + detail, failed ? 'warning' : 'success');
     } catch (e) {
       dismiss();
       toast(t('common.failed'), 'error');

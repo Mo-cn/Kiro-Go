@@ -220,7 +220,11 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("resolve profileArn: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/ListAvailableModels?origin=AI_EDITOR&maxResults=50", kiroRestAPIBase)
+	// maxResults is deliberately omitted: upstream rejects it on this API the
+	// same way it does on ListAvailableProfiles (HTTP 400 REQUEST_BODY_INVALID),
+	// which left the per-account model catalogue empty and made the panel's
+	// "refresh models" report zero. The response is not paginated here.
+	url := fmt.Sprintf("%s/ListAvailableModels?origin=AI_EDITOR", kiroRestAPIBase)
 	url = regionalizeURL(url, account)
 	url = withProfileArnQuery(url, account)
 

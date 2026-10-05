@@ -704,3 +704,66 @@ func TestOpenAIStreamPreservesUpstreamMaxTokensFinishReason(t *testing.T) {
 		t.Fatalf("expected finish_reason=length, got %s", rec.Body.String())
 	}
 }
+
+func TestFallbackModelsAreFreeTierOnly(t *testing.T) {
+	const suffix = "-thinking"
+	models := fallbackAnthropicModels(suffix)
+	if len(models) == 0 {
+		t.Fatal("fallback model list is empty")
+	}
+
+	free := make(map[string]bool, len(kiroModelCatalog))
+	for _, m := range kiroModelCatalog {
+		if m.FreeTier {
+			free[m.ID] = true
+		}
+	}
+
+	// A client on the cheapest plan must never be handed a model it cannot
+	// call: Kiro answers HTTP 400 INVALID_MODEL_ID for those, which reads like
+	// a typo in the id and sent users chasing the wrong problem.
+	for _, m := range models {
+		id, _ := m["id"].(string)
+		if id == "" {
+			t.Fatalf("fallback entry without id: %#v", m)
+		}
+		if !free[strings.TrimSuffix(id, suffix)] {
+			t.Fatalf("fallback advertises non-free model %q", id)
+		}
+		if strings.HasPrefix(id, "claude-opus-") || strings.HasPrefix(id, "gpt-") {
+			t.Fatalf("fallback advertises paid-only model %q", id)
+		}
+	}
+
+	// The free ids documented for Kiro must all be present.
+	for _, want := range []string{"claude-sonnet-4.5", "deepseek-3.2", "glm-5", "qwen3-coder-next"} {
+		found := false
+		for _, m := range models {
+			if id, _ := m["id"].(string); id == want || id == want+suffix {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("fallback is missing free model %q", want)
+		}
+	}
+}
+
+func TestKiroModelOwner(t *testing.T) {
+	cases := map[string]string{
+		"claude-sonnet-4.5":          "anthropic",
+		"claude-sonnet-4.5-thinking": "anthropic",
+		"glm-5":                      "zhipu",
+		"deepseek-3.2":               "deepseek",
+		"minimax-m2.5":               "minimax",
+		"qwen3-coder-next":           "qwen",
+		"gpt-5.6-sol":                "openai",
+		"model-not-in-catalogue":     "anthropic",
+	}
+	for in, want := range cases {
+		if got := kiroModelOwner(in); got != want {
+			t.Fatalf("kiroModelOwner(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
