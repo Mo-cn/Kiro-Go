@@ -265,7 +265,29 @@ var (
 	cfg     *Config
 	cfgLock sync.RWMutex
 	cfgPath string
+
+	// firstRunGeneratedPassword holds the random admin password minted while
+	// creating a brand-new config file, so main can print it once. Empty when
+	// no first-run generation happened.
+	firstRunGeneratedPassword string
 )
+
+// FirstRunGeneratedPassword returns the random password generated during the
+// most recent first-run config creation, or "" if none was generated.
+func FirstRunGeneratedPassword() string {
+	return firstRunGeneratedPassword
+}
+
+// generateAdminPassword mints a random admin password for a fresh install.
+// It falls back to the legacy default only if the system CSPRNG fails, which
+// should never happen in practice.
+func generateAdminPassword() string {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return "changeme"
+	}
+	return fmt.Sprintf("%x", buf)
+}
 
 // Init initializes the configuration system with the specified file path.
 // If the file doesn't exist, a default configuration is created.
@@ -278,13 +300,27 @@ func Load() error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 
+	firstRunGeneratedPassword = ""
+
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Create default configuration.
 			// Binds to 0.0.0.0 by default for Docker/container compatibility.
+			//
+			// A fresh install must not come up with a well-known admin
+			// password: the panel controls account credentials and proxy
+			// settings, and the README-documented "changeme" default has been
+			// left in place on internet-facing deployments. Honour
+			// ADMIN_PASSWORD when supplied, otherwise mint a random one and
+			// let main print it once.
+			password := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+			if password == "" {
+				password = generateAdminPassword()
+				firstRunGeneratedPassword = password
+			}
 			cfg = &Config{
-				Password:      "changeme",
+				Password:      password,
 				Port:          8080,
 				Host:          "0.0.0.0",
 				RequireApiKey: false,

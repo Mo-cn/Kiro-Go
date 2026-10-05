@@ -76,7 +76,7 @@ zeabur deploy
 
 Khi service đã chạy, mở `https://<your-domain>/admin` để đăng nhập.
 
-Cấu hình được tạo tự động tại `data/config.json`. Mount `/app/data` để lưu bền. Mật khẩu quản trị mặc định là `changeme` — hãy ghi đè bằng biến môi trường `ADMIN_PASSWORD` hoặc đổi trong bảng quản trị trước khi đưa vào production.
+Cấu hình được tạo tự động tại `data/config.json`. Mount `/app/data` để lưu bền. Lần chạy đầu tiên sẽ tạo mật khẩu quản trị ngẫu nhiên và in một lần ra log (có thể ghi đè bằng biến môi trường `ADMIN_PASSWORD`). Hãy đổi trong bảng quản trị trước khi đưa vào production.
 
 ## Cách dùng
 

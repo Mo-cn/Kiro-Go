@@ -578,6 +578,12 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 	var totalCredits float64
 	var contextUsagePercentages []float64
 	var sawOutput bool
+	// Terminal-signal bookkeeping for classifyStreamIntegrity. Some upstream
+	// accounts (observed on authMethod=idc) never send a metadataEvent
+	// stopReason: they end a completed turn with contextUsageEvent +
+	// meteringEvent + clean EOF. sawMetering records that terminal billing
+	// frame so a complete answer is not rejected as truncated.
+	var sawStopReason, sawAssistantContent, sawMetering bool
 	pending := &pendingToolUses{}
 	trackedCallback := *callback
 	originalOnToolUse := trackedCallback.OnToolUse
@@ -648,6 +654,7 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 		case "assistantResponseEvent":
 			if content, ok := event["content"].(string); ok && content != "" {
 				sawOutput = true
+				sawAssistantContent = true
 				if callback.OnText != nil {
 					emitted = true
 					callback.OnText(content, false)
@@ -666,6 +673,7 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 				return emitted, toolErr
 			}
 		case "meteringEvent":
+			sawMetering = true
 			if usage, ok := event["usage"].(float64); ok {
 				totalCredits += usage
 			}
@@ -677,8 +685,11 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 			// stopReason rides inside metadataEvent on the wire; there is no
 			// standalone stop reason event type. Its absence after content is
 			// how callers detect a truncated stream.
-			if reason := firstStringField(event, "stopReason", "stop_reason"); reason != "" && callback.OnStopReason != nil {
-				callback.OnStopReason(reason)
+			if reason := firstStringField(event, "stopReason", "stop_reason"); reason != "" {
+				sawStopReason = true
+				if callback.OnStopReason != nil {
+					callback.OnStopReason(reason)
+				}
 			}
 		}
 	}
@@ -689,6 +700,17 @@ func parseEventStreamTracked(body io.Reader, callback *KiroStreamCallback) (emit
 	}
 	if !sawOutput {
 		return emitted, errEmptyKiroStream
+	}
+	// Reached only after a clean EOF (read/frame errors return above) and
+	// successful tool flushing, so this cannot turn a dead stream into a
+	// success. meteringEvent is upstream closing the books on the turn; for
+	// accounts that never emit metadataEvent it is the only terminal signal
+	// they send, and without it classifyStreamIntegrity rejects every
+	// completed answer as truncated. Requiring assistant content keeps the
+	// deliberate reasoning-only truncation rule intact, and an explicit
+	// stopReason (e.g. MAX_TOKENS) is never overwritten.
+	if sawMetering && sawAssistantContent && !sawStopReason && callback.OnStopReason != nil {
+		callback.OnStopReason("end_turn")
 	}
 	if callback.OnCredits != nil && totalCredits > 0 {
 		callback.OnCredits(totalCredits)

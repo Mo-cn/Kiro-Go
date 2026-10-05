@@ -187,6 +187,70 @@ func TestParseEventStreamNilCallbackFieldsAreNoOp(t *testing.T) {
 	}
 }
 
+// TestParseEventStreamMeteringWithoutMetadataIsTerminal covers upstream
+// accounts (observed on authMethod=idc) that never send a metadataEvent
+// stopReason: a completed turn ends with assistant content, contextUsageEvent,
+// meteringEvent, then a clean EOF. Without a synthesized terminal signal
+// classifyStreamIntegrity rejects every such answer as truncated.
+func TestParseEventStreamMeteringWithoutMetadataIsTerminal(t *testing.T) {
+	var stopReason string
+	stream := bytes.NewReader(bytes.Join([][]byte{
+		awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "hello"}),
+		awsEventStreamFrame(t, "contextUsageEvent", map[string]interface{}{"contextUsagePercentage": 12.5}),
+		awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{"usage": 1.25}),
+	}, nil))
+
+	if err := parseEventStream(stream, &KiroStreamCallback{
+		OnStopReason: func(reason string) { stopReason = reason },
+	}); err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if stopReason != "end_turn" {
+		t.Fatalf("stopReason = %q, want end_turn", stopReason)
+	}
+}
+
+// TestParseEventStreamMeteringKeepsExplicitStopReason ensures a real
+// metadataEvent stop reason (e.g. MAX_TOKENS) is not overwritten by the
+// metering fallback.
+func TestParseEventStreamMeteringKeepsExplicitStopReason(t *testing.T) {
+	var stopReason string
+	stream := bytes.NewReader(bytes.Join([][]byte{
+		awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "hello"}),
+		awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{"stopReason": "MAX_TOKENS"}),
+		awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{"usage": 1.25}),
+	}, nil))
+
+	if err := parseEventStream(stream, &KiroStreamCallback{
+		OnStopReason: func(reason string) { stopReason = reason },
+	}); err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if stopReason != "MAX_TOKENS" {
+		t.Fatalf("stopReason = %q, want MAX_TOKENS", stopReason)
+	}
+}
+
+// TestParseEventStreamReasoningOnlyMeteringStaysIncomplete ensures the
+// deliberate reasoning-only truncation rule is not cleared by a metering
+// frame: with no assistant content no terminal signal is synthesized.
+func TestParseEventStreamReasoningOnlyMeteringStaysIncomplete(t *testing.T) {
+	var stopReason string
+	stream := bytes.NewReader(bytes.Join([][]byte{
+		awsEventStreamFrame(t, "reasoningContentEvent", map[string]interface{}{"text": "thinking"}),
+		awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{"usage": 1.25}),
+	}, nil))
+
+	if err := parseEventStream(stream, &KiroStreamCallback{
+		OnStopReason: func(reason string) { stopReason = reason },
+	}); err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if stopReason != "" {
+		t.Fatalf("stopReason = %q, want empty for a reasoning-only stream", stopReason)
+	}
+}
+
 func TestParseEventStreamPreservesInterleavedToolInputs(t *testing.T) {
 	var stream bytes.Buffer
 	for _, event := range []map[string]interface{}{

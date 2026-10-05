@@ -114,6 +114,51 @@ func TestUpdateSettingsPatchCanExplicitlyDisableAPIKey(t *testing.T) {
 	}
 }
 
+func TestFirstRunGeneratesRandomAdminPassword(t *testing.T) {
+	t.Setenv("ADMIN_PASSWORD", "")
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Init(path); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	generated := FirstRunGeneratedPassword()
+	if generated == "" {
+		t.Fatal("expected a generated first-run password")
+	}
+	if generated == "changeme" {
+		t.Fatal("first-run password must not be the legacy default")
+	}
+	if len(generated) < 16 {
+		t.Fatalf("generated password too short: %q", generated)
+	}
+	if got := GetPassword(); got != generated {
+		t.Fatalf("in-memory password = %q, want generated %q", got, generated)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var parsed Config
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if parsed.Password != generated {
+		t.Fatalf("persisted password = %q, want %q", parsed.Password, generated)
+	}
+}
+
+func TestFirstRunHonorsAdminPasswordEnv(t *testing.T) {
+	t.Setenv("ADMIN_PASSWORD", "env-admin-password")
+	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if got := FirstRunGeneratedPassword(); got != "" {
+		t.Fatalf("expected no generated password when ADMIN_PASSWORD is set, got %q", got)
+	}
+	if got := GetPassword(); got != "env-admin-password" {
+		t.Fatalf("password = %q, want env-admin-password", got)
+	}
+}
+
 func TestUpdateAccountStaleSnapshotPreservesCredentialRotation(t *testing.T) {
 	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatalf("init config: %v", err)

@@ -51,6 +51,19 @@ func main() {
 		config.SetPassword(envPassword)
 	}
 
+	// First-run credentials and the default-password warning. A brand-new
+	// config no longer ships with a well-known password; surface the generated
+	// one exactly once so it can be stored.
+	if generated := config.FirstRunGeneratedPassword(); generated != "" {
+		logger.Warnf("============================================================")
+		logger.Warnf("Generated a random admin password for this new install: %s", generated)
+		logger.Warnf("Save it now; it will not be shown again. Override with ADMIN_PASSWORD.")
+		logger.Warnf("============================================================")
+	} else if config.GetPassword() == "changeme" {
+		logger.Warnf("SECURITY: admin password is still the default 'changeme'.")
+		logger.Warnf("Set ADMIN_PASSWORD or change it in the admin panel before exposing this service.")
+	}
+
 	// 初始化账号池
 	pool.GetPool()
 
